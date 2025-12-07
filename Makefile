@@ -1,82 +1,79 @@
-# TCP Bridge - Makefile
-# Deploy WebSocket-to-TCP bridge on Google Cloud Run
+# Local Kafka - Makefile
 
-PROJECT_ID := graphql-category-db
-SERVICE_NAME := tcp-bridge
-REGION := us-central1
-SERVICE_ACCOUNT := cloud-run-sa@$(PROJECT_ID).iam.gserviceaccount.com
-
-.PHONY: help setup permissions deploy logs clean
+.PHONY: help up down logs status topics produce consume clean
 
 help:
-	@echo "TCP Bridge - Cloud Run Deployment"
+	@echo "Local Kafka - Docker Compose"
 	@echo ""
 	@echo "Usage:"
-	@echo "  make setup       - One-time setup (create service account, enable APIs)"
-	@echo "  make permissions - Grant required permissions"
-	@echo "  make deploy      - Deploy to Cloud Run"
-	@echo "  make logs        - Tail service logs"
-	@echo "  make url         - Show service URL"
-	@echo "  make clean       - Delete the service"
+	@echo "  make up       - Start Kafka + Zookeeper"
+	@echo "  make down     - Stop everything"
+	@echo "  make logs     - Tail Kafka logs"
+	@echo "  make status   - Show container status"
+	@echo "  make topics   - List topics"
+	@echo "  make create   - Create test topic"
+	@echo "  make produce  - Produce test messages"
+	@echo "  make consume  - Consume from test topic"
+	@echo "  make clean    - Stop and remove volumes"
 	@echo ""
 
-setup:
-	@echo "🔧 Creating service account..."
-	-gcloud iam service-accounts create cloud-run-sa \
-		--display-name="Cloud Run Service Account" \
-		--project=$(PROJECT_ID)
-	@echo "🔧 Enabling APIs..."
-	gcloud services enable run.googleapis.com --project=$(PROJECT_ID)
-	gcloud services enable cloudbuild.googleapis.com --project=$(PROJECT_ID)
-	@echo "✅ Setup complete"
+up:
+	@echo "🚀 Starting Kafka..."
+	docker-compose up -d
+	@echo ""
+	@echo "✅ Kafka running at localhost:9092"
+	@echo "✅ Kafka UI at http://localhost:8080"
+	@echo ""
+	@echo "Waiting for Kafka to be ready..."
+	@sleep 5
+	@make status
 
-permissions:
-	@echo "🔐 Granting Cloud Build permissions..."
-	gcloud projects add-iam-policy-binding $(PROJECT_ID) \
-		--member="serviceAccount:$(SERVICE_ACCOUNT)" \
-		--role="roles/cloudbuild.builds.builder"
-	@echo "🔐 Granting Storage Admin permissions..."
-	gcloud projects add-iam-policy-binding $(PROJECT_ID) \
-		--member="serviceAccount:$(SERVICE_ACCOUNT)" \
-		--role="roles/storage.admin"
-	@echo "✅ Permissions granted"
-
-deploy:
-	@echo "🚀 Deploying $(SERVICE_NAME) to Cloud Run..."
-	gcloud run deploy $(SERVICE_NAME) \
-		--service-account $(SERVICE_ACCOUNT) \
-		--build-service-account projects/$(PROJECT_ID)/serviceAccounts/$(SERVICE_ACCOUNT) \
-		--source . \
-		--region $(REGION) \
-		--allow-unauthenticated \
-		--project=$(PROJECT_ID)
-	@echo "✅ Deployed!"
-	@make url
+down:
+	@echo "🛑 Stopping Kafka..."
+	docker-compose down
 
 logs:
-	gcloud run services logs tail $(SERVICE_NAME) \
-		--region $(REGION) \
-		--project=$(PROJECT_ID)
+	docker-compose logs -f kafka
 
-url:
+status:
 	@echo ""
-	@echo "🌐 Service URL:"
-	@gcloud run services describe $(SERVICE_NAME) \
-		--region $(REGION) \
-		--project=$(PROJECT_ID) \
-		--format="value(status.url)"
+	@docker-compose ps
 	@echo ""
-	@echo "📡 WebSocket URL:"
-	@echo "wss://$$(gcloud run services describe $(SERVICE_NAME) --region $(REGION) --project=$(PROJECT_ID) --format='value(status.url)' | sed 's|https://||')/tcp"
-	@echo ""
+
+topics:
+	@echo "📋 Listing topics..."
+	docker exec kafka kafka-topics --bootstrap-server localhost:9092 --list
+
+create:
+	@echo "📦 Creating test topic..."
+	docker exec kafka kafka-topics --bootstrap-server localhost:9092 \
+		--create --topic test-topic --partitions 3 --replication-factor 1 \
+		--if-not-exists
+	docker exec kafka kafka-topics --bootstrap-server localhost:9092 \
+		--create --topic orders --partitions 3 --replication-factor 1 \
+		--if-not-exists
+	docker exec kafka kafka-topics --bootstrap-server localhost:9092 \
+		--create --topic payments --partitions 2 --replication-factor 1 \
+		--if-not-exists
+	@echo "✅ Topics created"
+	@make topics
+
+produce:
+	@echo "📤 Producing test messages..."
+	@echo '{"event":"purchase","amount":99.99,"user":"user-123"}' | docker exec -i kafka kafka-console-producer --bootstrap-server localhost:9092 --topic test-topic
+	@echo '{"event":"view","page":"/home","user":"user-456"}' | docker exec -i kafka kafka-console-producer --bootstrap-server localhost:9092 --topic test-topic
+	@echo '{"event":"click","button":"buy","user":"user-123"}' | docker exec -i kafka kafka-console-producer --bootstrap-server localhost:9092 --topic test-topic
+	@echo "✅ Messages produced to test-topic"
+
+consume:
+	@echo "📥 Consuming from test-topic (Ctrl+C to stop)..."
+	docker exec kafka kafka-console-consumer --bootstrap-server localhost:9092 \
+		--topic test-topic --from-beginning
 
 clean:
-	@echo "🗑️  Deleting $(SERVICE_NAME)..."
-	gcloud run services delete $(SERVICE_NAME) \
-		--region $(REGION) \
-		--project=$(PROJECT_ID) \
-		--quiet
-	@echo "✅ Deleted"
+	@echo "🗑️  Cleaning up..."
+	docker-compose down -v
+	@echo "✅ Cleaned"
 
-# First time: make setup && make permissions && make deploy
-# After that: make deploy
+# Quick test flow:
+# make up && make create && make produce
